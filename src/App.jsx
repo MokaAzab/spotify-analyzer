@@ -1,379 +1,476 @@
 import React, { useState } from 'react';
-import { Music, Search, Copy, Check, Download, ExternalLink } from 'lucide-react';
+import { Music, Loader, Download, Activity } from 'lucide-react';
 
 const SpotifyAnalyzer = () => {
-  const [spotifyUrl, setSpotifyUrl] = useState('');
+  const [trackUrl, setTrackUrl] = useState('');
   const [trackData, setTrackData] = useState(null);
+  const [audioFeatures, setAudioFeatures] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [copied, setCopied] = useState(false);
-  const [token, setToken] = useState(null);
+  const [downloading, setDownloading] = useState(false);
+  const [error, setError] = useState(null);
 
-  const CLIENT_ID = '8e9e53c5e52f4af0bd5a946e85736742';
-  const REDIRECT_URI = window.location.origin + '/callback';
-
-  // Key mappings (Pitch Class notation)
-  const keyMap = {
-    0: 'C', 1: 'C♯/D♭', 2: 'D', 3: 'D♯/E♭', 4: 'E', 5: 'F',
-    6: 'F♯/G♭', 7: 'G', 8: 'G♯/A♭', 9: 'A', 10: 'A♯/B♭', 11: 'B'
-  };
-
-  // PKCE helpers
-  const generateRandomString = (length) => {
-    const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    const values = crypto.getRandomValues(new Uint8Array(length));
-    return values.reduce((acc, x) => acc + possible[x % possible.length], "");
-  };
-
-  const sha256 = async (plain) => {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(plain);
-    return window.crypto.subtle.digest('SHA-256', data);
-  };
-
-  const base64encode = (input) => {
-    return btoa(String.fromCharCode(...new Uint8Array(input)))
-      .replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
-  };
-
-  // Authentication
-  React.useEffect(() => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const urlToken = urlParams.get('token');
-    
-    if (urlToken) {
-      setToken(urlToken);
-      localStorage.setItem('spotify_analyzer_token', urlToken);
-      window.history.replaceState({}, document.title, window.location.pathname);
-      return;
-    }
-
-    const code = urlParams.get('code');
-    let storedToken = localStorage.getItem('spotify_analyzer_token');
-
-    if (code && !storedToken) {
-      const codeVerifier = localStorage.getItem('code_verifier');
-      
-      fetch('https://accounts.spotify.com/api/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          client_id: CLIENT_ID,
-          grant_type: 'authorization_code',
-          code: code,
-          redirect_uri: REDIRECT_URI,
-          code_verifier: codeVerifier,
-        }),
-      })
-        .then(response => response.json())
-        .then(data => {
-          if (data.access_token) {
-            localStorage.setItem('spotify_analyzer_token', data.access_token);
-            setToken(data.access_token);
-            window.history.replaceState({}, document.title, '/');
-          }
-        });
-    } else if (storedToken) {
-      setToken(storedToken);
-    }
-  }, []);
-
-  const handleLogin = async () => {
-    const codeVerifier = generateRandomString(64);
-    const hashed = await sha256(codeVerifier);
-    const codeChallenge = base64encode(hashed);
-    localStorage.setItem('code_verifier', codeVerifier);
-
-    const authUrl = new URL('https://accounts.spotify.com/authorize');
-    authUrl.searchParams.append('client_id', CLIENT_ID);
-    authUrl.searchParams.append('response_type', 'code');
-    authUrl.searchParams.append('redirect_uri', REDIRECT_URI);
-    authUrl.searchParams.append('scope', 'user-read-private');
-    authUrl.searchParams.append('code_challenge_method', 'S256');
-    authUrl.searchParams.append('code_challenge', codeChallenge);
-
-    window.location.href = authUrl.toString();
-  };
+  const RAPIDAPI_KEY = '1321ebd11bmshf584ecfe6ea1e9ep1053b6jsne03ec8d12cb1';
 
   const extractTrackId = (url) => {
-    // Extract track ID from various Spotify URL formats
+    // Remove whitespace
+    url = url.trim();
+    
+    // Try different patterns
     const patterns = [
-      /track\/([a-zA-Z0-9]+)/,  // Standard URL
-      /spotify:track:([a-zA-Z0-9]+)/  // URI format
+      /track\/([a-zA-Z0-9]+)/,           // Standard URL
+      /spotify:track:([a-zA-Z0-9]+)/,    // Spotify URI
+      /^([a-zA-Z0-9]{22})$/              // Just the ID
     ];
     
     for (const pattern of patterns) {
       const match = url.match(pattern);
       if (match) return match[1];
     }
+    
     return null;
   };
 
   const analyzeTrack = async () => {
-    if (!spotifyUrl.trim()) {
-      setError('Please enter a Spotify link');
-      return;
-    }
-
-    const trackId = extractTrackId(spotifyUrl);
+    const trackId = extractTrackId(trackUrl);
     if (!trackId) {
-      setError('Invalid Spotify link. Please use a track URL or URI.');
+      setError('Invalid Spotify track URL');
       return;
     }
 
     setLoading(true);
-    setError('');
+    setError(null);
     setTrackData(null);
+    setAudioFeatures(null);
 
     try {
-      // Fetch track info
-      const trackResponse = await fetch(`https://api.spotify.com/v1/tracks/${trackId}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      
-      if (!trackResponse.ok) {
-        throw new Error('Failed to fetch track info');
-      }
-      
-      const track = await trackResponse.json();
+      // Get audio features from RapidAPI first
+      const featuresResponse = await fetch(
+        `https://spotify-audio-features-track-analysis.p.rapidapi.com/tracks/spotify_audio_features?spotify_track_id=${trackId}`,
+        {
+          headers: {
+            'X-RapidAPI-Key': RAPIDAPI_KEY,
+            'X-RapidAPI-Host': 'spotify-audio-features-track-analysis.p.rapidapi.com'
+          }
+        }
+      );
 
-      // Fetch audio features (tempo, key)
-      const featuresResponse = await fetch(`https://api.spotify.com/v1/audio-features/${trackId}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      
       if (!featuresResponse.ok) {
-        throw new Error('Failed to fetch audio features');
+        throw new Error('Failed to fetch audio features. Check your RapidAPI subscription.');
       }
-      
-      const features = await featuresResponse.json();
 
-      setTrackData({
-        name: track.name,
-        artists: track.artists.map(a => a.name).join(', '),
-        album: track.album.name,
-        albumArt: track.album.images[0]?.url,
-        tempo: Math.round(features.tempo),
-        key: keyMap[features.key] || 'Unknown',
-        mode: features.mode === 1 ? 'Major' : 'Minor',
-        timeSignature: features.time_signature,
-        duration: Math.floor(track.duration_ms / 1000),
-        energy: Math.round(features.energy * 100),
-        danceability: Math.round(features.danceability * 100),
-        valence: Math.round(features.valence * 100)
-      });
+      const apiData = await featuresResponse.json();
+      console.log('API Response:', apiData); // Debug log
+      
+      // The API returns data in audio_features object
+      const features = apiData.audio_features || apiData;
+      
+      // Convert string values to numbers if needed
+      const processedFeatures = {
+        key: typeof features.key === 'string' ? features.key : features.key,
+        mode: parseFloat(features.mode) || 0,
+        tempo: parseFloat(features.tempo) || 0,
+        time_signature: parseFloat(features.time_signature) || 4,
+        loudness: parseFloat(features.loudness) || 0,
+        energy: parseFloat(features.energy) || 0,
+        danceability: parseFloat(features.danceability) || 0,
+        valence: parseFloat(features.valence) || 0,
+        acousticness: parseFloat(features.acousticness) || 0,
+        instrumentalness: parseFloat(features.instrumentalness) || 0,
+        liveness: parseFloat(features.liveness) || 0,
+        speechiness: parseFloat(features.speechiness) || 0
+      };
+      
+      setAudioFeatures(processedFeatures);
+
+      // Get track metadata from RapidAPI downloader endpoint
+      const spotifyUrl = `https://open.spotify.com/track/${trackId}`;
+      const metadataResponse = await fetch(
+        `https://spotify-downloader12.p.rapidapi.com/Gettrack?spotify_url=${encodeURIComponent(spotifyUrl)}`,
+        {
+          method: 'GET',
+          headers: {
+            'X-RapidAPI-Key': RAPIDAPI_KEY,
+            'X-RapidAPI-Host': 'spotify-downloader12.p.rapidapi.com'
+          }
+        }
+      );
+
+      if (metadataResponse.ok) {
+        const metadataData = await metadataResponse.json();
+        console.log('Metadata response:', metadataData);
+        
+        // The API returns properly formatted track data already!
+        if (metadataData && metadataData.name) {
+          setTrackData(metadataData);
+        } else {
+          // Fallback: create basic track data
+          setTrackData({
+            id: trackId,
+            name: 'Track ' + trackId,
+            artists: [{ name: 'Unknown Artist' }],
+            album: {
+              name: 'Unknown Album',
+              images: [],
+              release_date: 'Unknown'
+            },
+            duration_ms: 0,
+            popularity: 0,
+            explicit: false,
+            preview_url: null,
+            external_urls: { spotify: `https://open.spotify.com/track/${trackId}` }
+          });
+        }
+      } else {
+        // Fallback: create basic track data
+        setTrackData({
+          id: trackId,
+          name: 'Track ' + trackId,
+          artists: [{ name: 'Unknown Artist' }],
+          album: {
+            name: 'Unknown Album',
+            images: [],
+            release_date: 'Unknown'
+          },
+          duration_ms: 0,
+          popularity: 0,
+          explicit: false,
+          preview_url: null,
+          external_urls: { spotify: `https://open.spotify.com/track/${trackId}` }
+        });
+      }
+
     } catch (err) {
-      setError(err.message || 'Failed to analyze track');
+      console.error('Analysis error:', err);
+      setError(err.message);
     } finally {
       setLoading(false);
     }
   };
 
-  const copyToClipboard = () => {
+  const downloadTrack = async () => {
     if (!trackData) return;
     
-    const text = `TITLE: ${trackData.name}
-ARTIST: ${trackData.artists}
-KEY: ${trackData.key} ${trackData.mode}
-BPM: ${trackData.tempo}
-TAGS: 
-WRITTEN BY: ${trackData.artists}`;
+    setDownloading(true);
     
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      // Get download link from RapidAPI
+      const spotifyUrl = `https://open.spotify.com/track/${trackData.id}`;
+      const response = await fetch(
+        `https://spotify-downloader12.p.rapidapi.com/convert?urls=${encodeURIComponent(spotifyUrl)}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-RapidAPI-Key': RAPIDAPI_KEY,
+            'X-RapidAPI-Host': 'spotify-downloader12.p.rapidapi.com'
+          },
+          body: JSON.stringify({})
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error('Download failed');
+      }
+
+      const data = await response.json();
+      console.log('Download API response:', data);
+      
+      if (!data.url) {
+        throw new Error('No download URL available');
+      }
+
+      // Open download link in new tab (CORS prevents direct download)
+      window.open(data.url, '_blank');
+      
+      // Create metadata text
+      const metadata = `
+═══════════════════════════════════════════
+    SPOTIFY TRACK INFORMATION
+═══════════════════════════════════════════
+
+Track Details:
+-------------
+Title: ${trackData.name}
+Artist: ${trackData.artists.map(a => a.name).join(', ')}
+Album: ${trackData.album.name}
+Release Date: ${trackData.album.release_date}
+Duration: ${formatDuration(trackData.duration_ms)}
+Popularity: ${trackData.popularity}/100
+Explicit: ${trackData.explicit ? 'Yes' : 'No'}
+
+Spotify Links:
+--------------
+Track ID: ${trackData.id}
+Track URL: https://open.spotify.com/track/${trackData.id}
+${trackData.external_urls?.spotify ? `Web Player: ${trackData.external_urls.spotify}` : ''}
+
+${audioFeatures ? `
+Audio Analysis:
+--------------
+Key: ${getKeyName(audioFeatures.key)} ${audioFeatures.mode === 1 ? 'Major' : 'Minor'}
+Tempo: ${Math.round(audioFeatures.tempo)} BPM
+Time Signature: ${audioFeatures.time_signature}/4
+Loudness: ${audioFeatures.loudness?.toFixed(1)} dB
+
+Musical Characteristics:
+-----------------------
+Energy: ${(audioFeatures.energy * 100).toFixed(0)}% - ${getEnergyDescription(audioFeatures.energy)}
+Danceability: ${(audioFeatures.danceability * 100).toFixed(0)}% - ${getDanceabilityDescription(audioFeatures.danceability)}
+Valence: ${(audioFeatures.valence * 100).toFixed(0)}% - ${getValenceDescription(audioFeatures.valence)}
+Acousticness: ${(audioFeatures.acousticness * 100).toFixed(0)}%
+Instrumentalness: ${(audioFeatures.instrumentalness * 100).toFixed(0)}%
+Liveness: ${(audioFeatures.liveness * 100).toFixed(0)}%
+Speechiness: ${(audioFeatures.speechiness * 100).toFixed(0)}%
+` : ''}
+
+═══════════════════════════════════════════
+Downloaded: ${new Date().toLocaleString()}
+Source: Spotify Analyzer with RapidAPI
+═══════════════════════════════════════════
+`;
+
+      // Download metadata file
+      const metadataBlob = new Blob([metadata], { type: 'text/plain' });
+      const metadataUrl = URL.createObjectURL(metadataBlob);
+      const metadataLink = document.createElement('a');
+      metadataLink.href = metadataUrl;
+      metadataLink.download = `${trackData.artists[0].name} - ${trackData.name} - Info.txt`;
+      document.body.appendChild(metadataLink);
+      metadataLink.click();
+      document.body.removeChild(metadataLink);
+      URL.revokeObjectURL(metadataUrl);
+
+      alert('✅ Download started! Check your downloads folder for MP3 + metadata file.');
+    } catch (err) {
+      console.error('Download error:', err);
+      alert(`❌ Download failed: ${err.message}`);
+    } finally {
+      setDownloading(false);
+    }
   };
 
-  const downloadMetadata = () => {
-    if (!trackData) return;
-    
-    const text = `TITLE: ${trackData.name}
-ARTIST: ${trackData.artists}
-KEY: ${trackData.key} ${trackData.mode}
-BPM: ${trackData.tempo}
-TAGS: 
-WRITTEN BY: ${trackData.artists}
-
----
-Album: ${trackData.album}
-Duration: ${formatDuration(trackData.duration)}
-Time Signature: ${trackData.timeSignature}/4
-Energy: ${trackData.energy}%
-Danceability: ${trackData.danceability}%`;
-    
-    const blob = new Blob([text], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${trackData.name} - Metadata.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const getKeyName = (key) => {
+    // API returns string keys like "D", "C#", etc.
+    if (typeof key === 'string') {
+      return key;
+    }
+    // Fallback for numeric keys
+    const keys = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+    return keys[key] || 'Unknown';
   };
 
-  const openSpotidown = () => {
-    if (!spotifyUrl) return;
-    window.open(`https://spotidown.app/?url=${encodeURIComponent(spotifyUrl)}`, '_blank');
+  const getEnergyDescription = (energy) => {
+    if (energy > 0.8) return 'Very High Energy';
+    if (energy > 0.6) return 'High Energy';
+    if (energy > 0.4) return 'Moderate Energy';
+    if (energy > 0.2) return 'Low Energy';
+    return 'Very Low Energy';
   };
 
-  const formatDuration = (seconds) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  const getDanceabilityDescription = (danceability) => {
+    if (danceability > 0.8) return 'Extremely Danceable';
+    if (danceability > 0.6) return 'Very Danceable';
+    if (danceability > 0.4) return 'Moderately Danceable';
+    if (danceability > 0.2) return 'Slightly Danceable';
+    return 'Not Danceable';
   };
 
-  if (!token) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-green-900 via-black to-green-900 flex items-center justify-center p-4">
-        <div className="text-center">
-          <Music className="w-20 h-20 mx-auto mb-6 text-green-500" />
-          <h1 className="text-3xl font-bold text-white mb-4">Spotify Track Analyzer</h1>
-          <p className="text-gray-400 mb-8">Extract song info, tempo, and musical key from any Spotify link</p>
-          <button
-            onClick={handleLogin}
-            className="bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-8 rounded-full transition"
-          >
-            Connect Spotify
-          </button>
-        </div>
-      </div>
-    );
-  }
+  const getValenceDescription = (valence) => {
+    if (valence > 0.8) return 'Very Positive/Happy';
+    if (valence > 0.6) return 'Positive/Upbeat';
+    if (valence > 0.4) return 'Neutral';
+    if (valence > 0.2) return 'Melancholic';
+    return 'Very Sad/Dark';
+  };
+
+  const formatDuration = (ms) => {
+    const minutes = Math.floor(ms / 60000);
+    const seconds = ((ms % 60000) / 1000).toFixed(0);
+    return `${minutes}:${seconds.padStart(2, '0')}`;
+  };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-black to-gray-900 text-white p-4">
-      <div className="max-w-2xl mx-auto">
+    <div className="min-h-screen bg-gradient-to-br from-purple-900 via-black to-green-900 p-4">
+      <div className="max-w-4xl mx-auto py-8">
         {/* Header */}
         <div className="text-center mb-8">
-          <Music className="w-16 h-16 mx-auto mb-4 text-green-500" />
-          <h1 className="text-3xl font-bold mb-2">Spotify Track Analyzer</h1>
-          <p className="text-gray-400">Paste any Spotify link to extract track details</p>
+          <Music className="w-20 h-20 text-green-500 mx-auto mb-4" />
+          <h1 className="text-5xl font-bold text-white mb-2">🎵 Spotify Analyzer</h1>
+          <p className="text-gray-300 text-lg">Get key, tempo & download any Spotify track</p>
+          <p className="text-xs text-gray-400 mt-2">No login required • Powered by RapidAPI</p>
         </div>
 
-        {/* Input */}
-        <div className="bg-gray-800 rounded-lg p-6 mb-6">
+        {/* Input Section */}
+        <div className="bg-black/50 backdrop-blur-lg rounded-2xl p-6 mb-6 border border-green-500/20">
           <div className="flex gap-3">
             <input
               type="text"
-              value={spotifyUrl}
-              onChange={(e) => setSpotifyUrl(e.target.value)}
+              value={trackUrl}
+              onChange={(e) => setTrackUrl(e.target.value)}
+              placeholder="Paste Spotify track URL here..."
+              className="flex-1 bg-black/50 text-white px-4 py-3 rounded-lg border border-gray-600 focus:border-green-500 focus:outline-none text-sm"
               onKeyPress={(e) => e.key === 'Enter' && analyzeTrack()}
-              placeholder="Paste Spotify link or URI (e.g., spotify:track:... or https://open.spotify.com/track/...)"
-              className="flex-1 bg-gray-700 text-white px-4 py-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
             />
             <button
               onClick={analyzeTrack}
-              disabled={loading}
-              className="bg-green-600 hover:bg-green-700 disabled:bg-gray-600 px-6 py-3 rounded-lg transition flex items-center gap-2"
+              disabled={loading || !trackUrl}
+              className="bg-green-500 hover:bg-green-600 disabled:bg-gray-600 text-black font-bold px-8 py-3 rounded-lg transition-all"
             >
-              <Search className="w-5 h-5" />
               {loading ? 'Analyzing...' : 'Analyze'}
             </button>
           </div>
           {error && (
-            <p className="text-red-400 text-sm mt-3">{error}</p>
+            <div className="mt-4 bg-red-500/20 border border-red-500 text-red-200 px-4 py-3 rounded-lg">
+              {error}
+            </div>
           )}
         </div>
 
+        {/* Loading State */}
+        {loading && (
+          <div className="bg-black/50 backdrop-blur-lg rounded-2xl p-12 border border-green-500/20 text-center">
+            <Loader className="w-16 h-16 text-green-500 animate-spin mx-auto mb-4" />
+            <p className="text-white text-xl">Analyzing track...</p>
+          </div>
+        )}
+
         {/* Results */}
-        {trackData && (
-          <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-lg p-6 shadow-2xl">
-            <div className="flex items-start gap-6 mb-6">
-              {trackData.albumArt && (
-                <img
-                  src={trackData.albumArt}
-                  alt={trackData.album}
-                  className="w-32 h-32 rounded-lg shadow-lg"
-                />
-              )}
-              <div className="flex-1">
-                <h2 className="text-2xl font-bold mb-2">{trackData.name}</h2>
-                <p className="text-gray-400 text-lg mb-1">{trackData.artists}</p>
-                <p className="text-gray-500 text-sm">{trackData.album}</p>
+        {trackData && audioFeatures && !loading && (
+          <div className="space-y-6">
+            {/* Track Info Card */}
+            <div className="bg-black/50 backdrop-blur-lg rounded-2xl p-6 border border-green-500/20">
+              <div className="flex gap-6">
+                {trackData.album.images[0] && (
+                  <img 
+                    src={trackData.album.images[0].url} 
+                    alt={trackData.name}
+                    className="w-40 h-40 rounded-lg shadow-2xl"
+                  />
+                )}
+                <div className="flex-1">
+                  <h2 className="text-3xl font-bold text-white mb-2">{trackData.name}</h2>
+                  <p className="text-xl text-gray-300 mb-2">{trackData.artists.map(a => a.name).join(', ')}</p>
+                  <p className="text-gray-400 mb-4">{trackData.album.name}</p>
+                  <div className="flex flex-wrap gap-3 text-sm text-gray-400">
+                    <span>Duration: {formatDuration(trackData.duration_ms)}</span>
+                    <span>•</span>
+                    <span>Popularity: {trackData.popularity}/100</span>
+                    <span>•</span>
+                    <span>{trackData.album.release_date}</span>
+                  </div>
+                  {trackData.preview_url && (
+                    <audio controls className="mt-4 w-full">
+                      <source src={trackData.preview_url} type="audio/mpeg" />
+                    </audio>
+                  )}
+                </div>
               </div>
-              <button
-                onClick={copyToClipboard}
-                className="p-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition"
-                title="Copy Craft format"
-              >
-                {copied ? <Check className="w-5 h-5 text-green-500" /> : <Copy className="w-5 h-5" />}
-              </button>
-              <button
-                onClick={downloadMetadata}
-                className="p-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition"
-                title="Download metadata"
-              >
-                <Download className="w-5 h-5" />
-              </button>
-              <button
-                onClick={openSpotidown}
-                className="p-2 bg-green-600 hover:bg-green-700 rounded-lg transition"
-                title="Download audio via Spotidown"
-              >
-                <ExternalLink className="w-5 h-5" />
-              </button>
             </div>
 
-            {/* Primary Info */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-              <div className="bg-gray-800 rounded-lg p-4 text-center">
-                <p className="text-gray-400 text-sm mb-1">Tempo</p>
-                <p className="text-3xl font-bold text-green-500">{trackData.tempo}</p>
-                <p className="text-gray-500 text-xs">BPM</p>
+            {/* Key & Tempo - Big Display */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Key */}
+              <div className="bg-gradient-to-br from-purple-600 to-purple-900 rounded-2xl p-8 border border-purple-400/20 text-center">
+                <Activity className="w-12 h-12 text-white mx-auto mb-4 opacity-80" />
+                <p className="text-purple-200 text-sm uppercase tracking-wider mb-2">Musical Key</p>
+                <p className="text-7xl font-bold text-white mb-2">{getKeyName(audioFeatures.key)}</p>
+                <p className="text-3xl text-purple-200">{audioFeatures.mode === 1 ? 'Major' : 'Minor'}</p>
               </div>
-              
-              <div className="bg-gray-800 rounded-lg p-4 text-center">
-                <p className="text-gray-400 text-sm mb-1">Key</p>
-                <p className="text-3xl font-bold text-blue-500">{trackData.key}</p>
-                <p className="text-gray-500 text-xs">{trackData.mode}</p>
-              </div>
-              
-              <div className="bg-gray-800 rounded-lg p-4 text-center">
-                <p className="text-gray-400 text-sm mb-1">Time</p>
-                <p className="text-3xl font-bold text-purple-500">{trackData.timeSignature}/4</p>
-                <p className="text-gray-500 text-xs">Signature</p>
-              </div>
-              
-              <div className="bg-gray-800 rounded-lg p-4 text-center">
-                <p className="text-gray-400 text-sm mb-1">Duration</p>
-                <p className="text-3xl font-bold text-orange-500">{formatDuration(trackData.duration)}</p>
-                <p className="text-gray-500 text-xs">Minutes</p>
+
+              {/* Tempo */}
+              <div className="bg-gradient-to-br from-green-600 to-green-900 rounded-2xl p-8 border border-green-400/20 text-center">
+                <div className="w-12 h-12 mx-auto mb-4 flex items-center justify-center">
+                  <div className="w-8 h-8 bg-white rounded-full animate-pulse"></div>
+                </div>
+                <p className="text-green-200 text-sm uppercase tracking-wider mb-2">Tempo</p>
+                <p className="text-7xl font-bold text-white mb-2">{Math.round(audioFeatures.tempo)}</p>
+                <p className="text-3xl text-green-200">BPM</p>
               </div>
             </div>
 
             {/* Audio Characteristics */}
-            <div className="space-y-3">
-              <h3 className="text-lg font-semibold mb-3">Audio Characteristics</h3>
-              
-              <div>
-                <div className="flex justify-between text-sm mb-1">
-                  <span className="text-gray-400">Energy</span>
-                  <span className="text-white">{trackData.energy}%</span>
+            <div className="bg-black/50 backdrop-blur-lg rounded-2xl p-6 border border-green-500/20">
+              <h3 className="text-2xl font-bold text-white mb-4">Audio Characteristics</h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="bg-gray-800/50 p-4 rounded-lg">
+                  <p className="text-gray-400 text-sm mb-1">Energy</p>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 bg-gray-700 h-2 rounded-full overflow-hidden">
+                      <div className="bg-red-500 h-full" style={{ width: `${audioFeatures.energy * 100}%` }}></div>
+                    </div>
+                    <span className="text-white font-bold">{(audioFeatures.energy * 100).toFixed(0)}%</span>
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1">{getEnergyDescription(audioFeatures.energy)}</p>
                 </div>
-                <div className="bg-gray-700 h-2 rounded-full overflow-hidden">
-                  <div className="bg-green-500 h-full" style={{ width: `${trackData.energy}%` }} />
+
+                <div className="bg-gray-800/50 p-4 rounded-lg">
+                  <p className="text-gray-400 text-sm mb-1">Danceability</p>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 bg-gray-700 h-2 rounded-full overflow-hidden">
+                      <div className="bg-purple-500 h-full" style={{ width: `${audioFeatures.danceability * 100}%` }}></div>
+                    </div>
+                    <span className="text-white font-bold">{(audioFeatures.danceability * 100).toFixed(0)}%</span>
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1">{getDanceabilityDescription(audioFeatures.danceability)}</p>
                 </div>
-              </div>
-              
-              <div>
-                <div className="flex justify-between text-sm mb-1">
-                  <span className="text-gray-400">Danceability</span>
-                  <span className="text-white">{trackData.danceability}%</span>
-                </div>
-                <div className="bg-gray-700 h-2 rounded-full overflow-hidden">
-                  <div className="bg-blue-500 h-full" style={{ width: `${trackData.danceability}%` }} />
-                </div>
-              </div>
-              
-              <div>
-                <div className="flex justify-between text-sm mb-1">
-                  <span className="text-gray-400">Positivity</span>
-                  <span className="text-white">{trackData.valence}%</span>
-                </div>
-                <div className="bg-gray-700 h-2 rounded-full overflow-hidden">
-                  <div className="bg-purple-500 h-full" style={{ width: `${trackData.valence}%` }} />
+
+                <div className="bg-gray-800/50 p-4 rounded-lg">
+                  <p className="text-gray-400 text-sm mb-1">Valence (Mood)</p>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 bg-gray-700 h-2 rounded-full overflow-hidden">
+                      <div className="bg-yellow-500 h-full" style={{ width: `${audioFeatures.valence * 100}%` }}></div>
+                    </div>
+                    <span className="text-white font-bold">{(audioFeatures.valence * 100).toFixed(0)}%</span>
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1">{getValenceDescription(audioFeatures.valence)}</p>
                 </div>
               </div>
             </div>
+
+            {/* Technical Details */}
+            <div className="bg-black/50 backdrop-blur-lg rounded-2xl p-6 border border-green-500/20">
+              <h3 className="text-2xl font-bold text-white mb-4">Technical Details</h3>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-gray-300">
+                <div>
+                  <p className="text-gray-400 text-sm">Time Signature</p>
+                  <p className="text-xl font-bold text-white">{audioFeatures.time_signature}/4</p>
+                </div>
+                <div>
+                  <p className="text-gray-400 text-sm">Loudness</p>
+                  <p className="text-xl font-bold text-white">{audioFeatures.loudness?.toFixed(1)} dB</p>
+                </div>
+                <div>
+                  <p className="text-gray-400 text-sm">Acousticness</p>
+                  <p className="text-xl font-bold text-white">{(audioFeatures.acousticness * 100).toFixed(0)}%</p>
+                </div>
+                <div>
+                  <p className="text-gray-400 text-sm">Instrumentalness</p>
+                  <p className="text-xl font-bold text-white">{(audioFeatures.instrumentalness * 100).toFixed(0)}%</p>
+                </div>
+                <div>
+                  <p className="text-gray-400 text-sm">Liveness</p>
+                  <p className="text-xl font-bold text-white">{(audioFeatures.liveness * 100).toFixed(0)}%</p>
+                </div>
+                <div>
+                  <p className="text-gray-400 text-sm">Speechiness</p>
+                  <p className="text-xl font-bold text-white">{(audioFeatures.speechiness * 100).toFixed(0)}%</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Download Button */}
+            <button
+              onClick={downloadTrack}
+              disabled={downloading}
+              className="w-full bg-gradient-to-r from-blue-600 to-blue-800 hover:from-blue-700 hover:to-blue-900 disabled:from-gray-600 disabled:to-gray-800 text-white font-bold py-4 px-8 rounded-lg transition-all flex items-center justify-center gap-3 text-lg"
+            >
+              <Download className="w-6 h-6" />
+              {downloading ? 'Downloading...' : 'Download MP3 + Metadata'}
+            </button>
+
+            <p className="text-center text-xs text-gray-400">
+              Downloads both the audio file and a detailed info file with all analysis data
+            </p>
           </div>
         )}
       </div>
